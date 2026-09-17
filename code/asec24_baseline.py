@@ -1,6 +1,4 @@
-
 """
-Created on Wed Dec  3 16:29:07 2025
 
 @author: mlzheng
 
@@ -8,10 +6,9 @@ Baseline estimation for tax year 2023
 Married Filing Jointly, EITC and ACTC included as endogenous transfers
 
 Automates:
-1. For each g in g_grid: find sigma that minimizes population-weighted WAAD
-2. For each g in g_grid: find sigma that minimizes tax-weighted WAAD
-3. Report the global best for each criterion
-4. Print a joint determination table for reporting g values
+1. For each g in g_grid: find sigma that minimizes each WAAD criterion
+2. Report the global best for each criterion (population, tax-paid, revenue)
+3. Print a joint determination table for reporting g values
 
 Prints results for manual checking.
 """
@@ -103,6 +100,18 @@ print(f"  CAP_VAL > 0: {pos_weighted_cap/total_weighted*100:.2f}%")
 print(f"  DIV_VAL > 0: {pos_weighted_div/total_weighted*100:.2f}%")
 print(f"  EITC  > 0:   {pos_weighted_eitc/total_weighted*100:.2f}%")
 print(f"  ACTC  > 0:   {pos_weighted_actc/total_weighted*100:.2f}%")
+
+# Weighted totals
+total_agi = np.sum(df['MARSUPWT'] * df['AGI'])
+total_cap = np.sum(df['MARSUPWT'] * df['CAP_VAL'])
+total_div = np.sum(df['MARSUPWT'] * df['DIV_VAL'])
+
+# Shares of AGI
+share_cap = total_cap / total_agi * 100
+share_div = total_div / total_agi * 100
+
+print(f"CAP_VAL / AGI: {share_cap:.2f}%")
+print(f"DIV_VAL / AGI: {share_div:.2f}%")
 
 # =============================================================================
 # CONSTRUCT TAX VARIABLES
@@ -221,7 +230,7 @@ def optimize_tax_rates(sigma, g, x0=None):
     return result
 
 # =============================================================================
-# BRACKET WEIGHTS
+# BRACKET WEIGHTS (THREE CRITERIA)
 # =============================================================================
 
 ind_tax_actual = taxable @ x_stat
@@ -233,24 +242,46 @@ total_tax_weighted = np.sum(marsupwt * ind_tax_actual)
 
 pi_k = np.zeros(n_brackets)
 pi_k_tax = np.zeros(n_brackets)
+pi_k_rev = np.zeros(n_brackets)
 
 for k in range(n_brackets):
     lower = bracket_bounds[k]
     upper = bracket_bounds[k + 1]
     in_bracket = (taxable_ordinary >= lower) & (taxable_ordinary < upper)
+
+    # Criterion 1: population share
     pi_k[k] = np.sum(marsupwt[in_bracket]) / total_pop_weight
+
+    # Criterion 2: tax paid by top-bracket group
     pi_k_tax[k] = np.sum(marsupwt[in_bracket] * ind_tax_actual[in_bracket]) / total_tax_weighted
+
+    # Criterion 3: revenue generated at marginal rate k
+    revenue_at_k = np.sum(marsupwt * taxable[:, k] * x_stat[k])
+    pi_k_rev[k] = revenue_at_k / total_tax_weighted
+
+# Print bracket weights (outside the loop)
+print("\nBracket weights (three criteria):")
+print(f"{'Bracket':>8} {'Population':>12} {'Tax paid':>12} {'Revenue':>12}")
+print("-" * 50)
+for k in range(n_brackets):
+    print(f"{k+1:>8} {pi_k[k]:>12.4f} {pi_k_tax[k]:>12.4f} {pi_k_rev[k]:>12.4f}")
+print("-" * 50)
+print(f"{'Sum':>8} {np.sum(pi_k):>12.4f} {np.sum(pi_k_tax):>12.4f} {np.sum(pi_k_rev):>12.4f}")
 
 assert np.isclose(np.sum(pi_k), 1.0)
 assert np.isclose(np.sum(pi_k_tax), 1.0)
+assert np.isclose(np.sum(pi_k_rev), 1.0)
 
-print(f"\nBracket population weights: {pi_k.round(4)}")
+# =============================================================================
+# WAAD FUNCTION (THREE CRITERIA)
+# =============================================================================
 
 def compute_waad(optimal_rates):
     rate_errors = np.abs(optimal_rates - x_stat)
     waad_pop = np.sum(pi_k * rate_errors) * 100
     waad_tax = np.sum(pi_k_tax * rate_errors) * 100
-    return waad_pop, waad_tax
+    waad_rev = np.sum(pi_k_rev * rate_errors) * 100
+    return waad_pop, waad_tax, waad_rev
 
 # =============================================================================
 # PART 1: DETAILED RESULTS FOR g = 0.145
@@ -262,9 +293,9 @@ DETAILED_SIGMA_VALUES = [
     1.109, 1.110, 1.111, 1.112, 1.113, 1.114, 1.115, 1.130, 1.300
 ]
 
-print("\n" + "="*80)
+print("\n" + "="*100)
 print(f"DETAILED RESULTS FOR g = {G_DETAILED:.3f}")
-print("="*80)
+print("="*100)
 
 detailed_results = []
 x0 = x_stat.copy()
@@ -272,25 +303,27 @@ x0 = x_stat.copy()
 for sigma in DETAILED_SIGMA_VALUES:
     result = optimize_tax_rates(sigma, G_DETAILED, x0=x0)
     if result.success:
-        waad_pop, waad_tax = compute_waad(result.x)
+        waad_pop, waad_tax, waad_rev = compute_waad(result.x)
         detailed_results.append({
             'sigma': sigma,
             'waad_pop': waad_pop,
             'waad_tax': waad_tax,
+            'waad_rev': waad_rev,
             'rates': result.x
         })
         x0 = result.x
     else:
         print(f"  Failed at sigma = {sigma:.3f}")
 
-print(f"{'Sigma':>8} {'WAAD_P':>10} {'WAAD_T':>10} {'B1':>8} {'B2':>8} {'B3':>8} {'B4':>8} {'B5':>8} {'B6':>8} {'B7':>8}")
-print("-"*90)
+print(f"{'Sigma':>8} {'WAAD_P':>9} {'WAAD_T':>9} {'WAAD_R':>9} "
+      f"{'B1':>7} {'B2':>7} {'B3':>7} {'B4':>7} {'B5':>7} {'B6':>7} {'B7':>7}")
+print("-"*100)
 for d in detailed_results:
     r = d['rates']
-    print(f"{d['sigma']:8.3f} {d['waad_pop']:9.2f}% {d['waad_tax']:9.2f}% "
-          f"{r[0]:8.3f} {r[1]:8.3f} {r[2]:8.3f} {r[3]:8.3f} "
-          f"{r[4]:8.3f} {r[5]:8.3f} {r[6]:8.3f}")
-print("-"*90)
+    print(f"{d['sigma']:8.3f} {d['waad_pop']:8.2f}% {d['waad_tax']:8.2f}% {d['waad_rev']:8.2f}% "
+          f"{r[0]:7.3f} {r[1]:7.3f} {r[2]:7.3f} {r[3]:7.3f} "
+          f"{r[4]:7.3f} {r[5]:7.3f} {r[6]:7.3f}")
+print("-"*100)
 
 # =============================================================================
 # PART 2: JOINT SEARCH OVER g AND sigma
@@ -312,8 +345,12 @@ print("="*80)
 for g in G_GRID:
     print(f"\nProcessing g = {g:.3f}...")
 
-    best_pop = {'waad': np.inf, 'g': g, 'sigma': None, 'waad_pop': None, 'waad_tax': None, 'rates': None}
-    best_tax = {'waad': np.inf, 'g': g, 'sigma': None, 'waad_pop': None, 'waad_tax': None, 'rates': None}
+    best_pop = {'waad': np.inf, 'g': g, 'sigma': None,
+                'waad_pop': None, 'waad_tax': None, 'waad_rev': None, 'rates': None}
+    best_tax = {'waad': np.inf, 'g': g, 'sigma': None,
+                'waad_pop': None, 'waad_tax': None, 'waad_rev': None, 'rates': None}
+    best_rev = {'waad': np.inf, 'g': g, 'sigma': None,
+                'waad_pop': None, 'waad_tax': None, 'waad_rev': None, 'rates': None}
 
     x0 = x_stat.copy()
 
@@ -321,23 +358,26 @@ for g in G_GRID:
         result = optimize_tax_rates(sigma, g, x0=x0)
 
         if result.success:
-            waad_pop, waad_tax = compute_waad(result.x)
+            waad_pop, waad_tax, waad_rev = compute_waad(result.x)
 
             if waad_pop < best_pop['waad']:
                 best_pop.update({
-                    'waad': waad_pop,
-                    'sigma': sigma,
-                    'waad_pop': waad_pop,
-                    'waad_tax': waad_tax,
+                    'waad': waad_pop, 'sigma': sigma,
+                    'waad_pop': waad_pop, 'waad_tax': waad_tax, 'waad_rev': waad_rev,
                     'rates': result.x.copy()
                 })
 
             if waad_tax < best_tax['waad']:
                 best_tax.update({
-                    'waad': waad_tax,
-                    'sigma': sigma,
-                    'waad_pop': waad_pop,
-                    'waad_tax': waad_tax,
+                    'waad': waad_tax, 'sigma': sigma,
+                    'waad_pop': waad_pop, 'waad_tax': waad_tax, 'waad_rev': waad_rev,
+                    'rates': result.x.copy()
+                })
+
+            if waad_rev < best_rev['waad']:
+                best_rev.update({
+                    'waad': waad_rev, 'sigma': sigma,
+                    'waad_pop': waad_pop, 'waad_tax': waad_tax, 'waad_rev': waad_rev,
                     'rates': result.x.copy()
                 })
 
@@ -346,8 +386,8 @@ for g in G_GRID:
     if best_pop['sigma'] is not None:
         results.append(best_pop)
         results.append(best_tax)
+        results.append(best_rev)
 
-        # Store reporting values
         if g in g_report:
             report_results.append({
                 'g': g,
@@ -355,10 +395,16 @@ for g in G_GRID:
                 'waad_pop': best_pop['waad_pop'],
                 'sigma_tax': best_tax['sigma'],
                 'waad_tax': best_tax['waad_tax'],
+                'sigma_rev': best_rev['sigma'],
+                'waad_rev': best_rev['waad_rev'],
             })
 
-        print(f"  Best pop: sigma = {best_pop['sigma']:.3f}, WAAD_P = {best_pop['waad_pop']:.2f}%, WAAD_T = {best_pop['waad_tax']:.2f}%")
-        print(f"  Best tax: sigma = {best_tax['sigma']:.3f}, WAAD_P = {best_tax['waad_pop']:.2f}%, WAAD_T = {best_tax['waad_tax']:.2f}%")
+        print(f"  Best pop: sigma = {best_pop['sigma']:.3f}, "
+              f"WAAD_P = {best_pop['waad_pop']:.2f}%, WAAD_T = {best_pop['waad_tax']:.2f}%, WAAD_R = {best_pop['waad_rev']:.2f}%")
+        print(f"  Best tax: sigma = {best_tax['sigma']:.3f}, "
+              f"WAAD_P = {best_tax['waad_pop']:.2f}%, WAAD_T = {best_tax['waad_tax']:.2f}%, WAAD_R = {best_tax['waad_rev']:.2f}%")
+        print(f"  Best rev: sigma = {best_rev['sigma']:.3f}, "
+              f"WAAD_P = {best_rev['waad_pop']:.2f}%, WAAD_T = {best_rev['waad_tax']:.2f}%, WAAD_R = {best_rev['waad_rev']:.2f}%")
     else:
         print(f"  No successful optimization for g = {g:.3f}")
 
@@ -366,15 +412,16 @@ for g in G_GRID:
 # JOINT DETERMINATION TABLE
 # =============================================================================
 
-print("\n" + "="*70)
+print("\n" + "="*90)
 print("JOINT DETERMINATION TABLE (Reporting g values)")
-print("="*70)
-print(f"{'g':>8} {'sigma_pop':>10} {'WAAD_P':>8} {'sigma_tax':>10} {'WAAD_T':>8}")
-print("-"*70)
+print("="*90)
+print(f"{'g':>8} {'sig_pop':>9} {'WAAD_P':>8} {'sig_tax':>9} {'WAAD_T':>8} {'sig_rev':>9} {'WAAD_R':>8}")
+print("-"*90)
 for row in report_results:
-    print(f"{row['g']:>8.3f} {row['sigma_pop']:>10.3f} {row['waad_pop']:>7.2f}% "
-          f"{row['sigma_tax']:>10.3f} {row['waad_tax']:>7.2f}%")
-print("-"*70)
+    print(f"{row['g']:>8.3f} {row['sigma_pop']:>9.3f} {row['waad_pop']:>7.2f}% "
+          f"{row['sigma_tax']:>9.3f} {row['waad_tax']:>7.2f}% "
+          f"{row['sigma_rev']:>9.3f} {row['waad_rev']:>7.2f}%")
+print("-"*90)
 
 # =============================================================================
 # GLOBAL BEST
@@ -383,20 +430,32 @@ print("-"*70)
 if results:
     global_pop = min(results, key=lambda x: x['waad_pop'])
     global_tax = min(results, key=lambda x: x['waad_tax'])
+    global_rev = min(results, key=lambda x: x['waad_rev'])
 
     print("\n" + "="*80)
     print("GLOBAL BEST RESULTS")
     print("="*80)
+
     print(f"\nPopulation-weighted criterion:")
     print(f"  g = {global_pop['g']:.3f}")
     print(f"  sigma = {global_pop['sigma']:.3f}")
     print(f"  WAAD_P = {global_pop['waad_pop']:.2f}%")
     print(f"  WAAD_T = {global_pop['waad_tax']:.2f}%")
+    print(f"  WAAD_R = {global_pop['waad_rev']:.2f}%")
     print(f"  Rates = {np.round(global_pop['rates'], 3)}")
 
-    print(f"\nTax-weighted criterion:")
+    print(f"\nTax-paid-weighted criterion:")
     print(f"  g = {global_tax['g']:.3f}")
     print(f"  sigma = {global_tax['sigma']:.3f}")
     print(f"  WAAD_P = {global_tax['waad_pop']:.2f}%")
     print(f"  WAAD_T = {global_tax['waad_tax']:.2f}%")
+    print(f"  WAAD_R = {global_tax['waad_rev']:.2f}%")
     print(f"  Rates = {np.round(global_tax['rates'], 3)}")
+
+    print(f"\nRevenue-weighted criterion:")
+    print(f"  g = {global_rev['g']:.3f}")
+    print(f"  sigma = {global_rev['sigma']:.3f}")
+    print(f"  WAAD_P = {global_rev['waad_pop']:.2f}%")
+    print(f"  WAAD_T = {global_rev['waad_tax']:.2f}%")
+    print(f"  WAAD_R = {global_rev['waad_rev']:.2f}%")
+    print(f"  Rates = {np.round(global_rev['rates'], 3)}")
